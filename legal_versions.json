@@ -1,0 +1,18 @@
+{
+  "terms": {
+    "version": "1.2-2026-10-22-9765f45af7a5",
+    "sha256": "9765f45af7a5b45056023e47f7a2c6d531ff1bfab994ac6df0ef9698b34966e0"
+  },
+  "policy": {
+    "version": "1.2-2026-10-22-29a58561ecab",
+    "sha256": "29a58561ecabd148b8e1f3c234a8b1e98dc8cd4aa30d4179ce6b2ec6e2649ab5"
+  },
+  "personal_data": {
+    "version": "1.2-2026-10-22-b36ccddd92af",
+    "sha256": "b36ccddd92af1146c19677cacdcb7b6e33dfa7f4eee185a5cbc34021024ab4e6"
+  },
+  "analytics": {
+    "version": "1.2-2026-10-22-db41a103a91b",
+    "sha256": "db41a103a91b832f4b99dd5286af7f2ad81922f9157343cbcf50abdec91c67e7"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "terms": [
+    {
+      "version": "1.1-draft-b31908b54e2e",
+      "sha256": "b31908b54e2e562dbffe3286e580182084af7c8387ff1792b63df311aea274ea"
+    },
+    {
+      "version": "1.1-2026-10-21-ef3151df68aa",
+      "sha256": "ef3151df68aa4ee7d1f08c6a7839acf107766628615cec7e7602dddc74527279"
+    }
+  ],
+  "policy": [
+    {
+      "version": "1.1-draft-ad738406e66f",
+      "sha256": "ad738406e66f84fa7cc10d769e6c972a98cb78e700058aab4c329b73c41124ad"
+    },
+    {
+      "version": "1.1-2026-10-21-46176e3e9ce3",
+      "sha256": "46176e3e9ce332d715fa6db8f7c65daeb663bf82d11b79c11f929a9954709c39"
+    }
+  ],
+  "personal_data": [
+    {
+      "version": "1.1-draft-3c2241de7029",
+      "sha256": "3c2241de70293dbe742d06f9db18adf7a58e679990c6b6babd4070c9f9269df2"
+    },
+    {
+      "version": "1.1-2026-10-21-0eb3ac9f027b",
+      "sha256": "0eb3ac9f027be5a98242d4c749c59280b4a11f3503b70ad5652cff43a39bffe7"
+    }
+  ],
+  "analytics": [
+    {
+      "version": "1.1-draft-957fc6448abd",
+      "sha256": "957fc6448abd5e0c73b7b0e361d16003779f75ac119954f56c2be4fb0e79676c"
+    },
+    {
+      "version": "1.1-2026-10-21-0ca00852191b",
+      "sha256": "0ca00852191b191624d10f6b11ecf75ba789a5f0b850f4f058d9397730528233"
+    }
+  ]
+}

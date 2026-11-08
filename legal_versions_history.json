@@ -7,6 +7,10 @@
     {
       "version": "1.1-2026-10-21-ef3151df68aa",
       "sha256": "ef3151df68aa4ee7d1f08c6a7839acf107766628615cec7e7602dddc74527279"
+    },
+    {
+      "version": "1.2-2026-10-22-9765f45af7a5",
+      "sha256": "9765f45af7a5b45056023e47f7a2c6d531ff1bfab994ac6df0ef9698b34966e0"
     }
   ],
   "policy": [
@@ -17,6 +21,10 @@
     {
       "version": "1.1-2026-10-21-46176e3e9ce3",
       "sha256": "46176e3e9ce332d715fa6db8f7c65daeb663bf82d11b79c11f929a9954709c39"
+    },
+    {
+      "version": "1.2-2026-10-22-29a58561ecab",
+      "sha256": "29a58561ecabd148b8e1f3c234a8b1e98dc8cd4aa30d4179ce6b2ec6e2649ab5"
     }
   ],
   "personal_data": [
@@ -27,6 +35,10 @@
     {
       "version": "1.1-2026-10-21-0eb3ac9f027b",
       "sha256": "0eb3ac9f027be5a98242d4c749c59280b4a11f3503b70ad5652cff43a39bffe7"
+    },
+    {
+      "version": "1.2-2026-10-22-b36ccddd92af",
+      "sha256": "b36ccddd92af1146c19677cacdcb7b6e33dfa7f4eee185a5cbc34021024ab4e6"
     }
   ],
   "analytics": [
@@ -37,6 +49,10 @@
     {
       "version": "1.1-2026-10-21-0ca00852191b",
       "sha256": "0ca00852191b191624d10f6b11ecf75ba789a5f0b850f4f058d9397730528233"
+    },
+    {
+      "version": "1.2-2026-10-22-db41a103a91b",
+      "sha256": "db41a103a91b832f4b99dd5286af7f2ad81922f9157343cbcf50abdec91c67e7"
     }
   ]
 }

@@ -89,31 +89,39 @@ def retention_failure_code(failure):
     return f'retention_failed_stage_{failure.stage}_type_{kind}_sqlstate_{state}_reason_{reason}'
 
 
+retention_status = {}
+
+
 async def cleanup_personal_data():
+    stages = [
+        ('web_sessions', [('DELETE FROM web_portal_sessions WHERE expires_at<now()', ())]),
+        ('web_push', [("DELETE FROM web_push_subscriptions WHERE updated_at<now()-interval '30 days'", ()),
+                      ("DELETE FROM web_push_deliveries WHERE created_at<now()-interval '10 days'", ())]),
+        ('assistant', [("DELETE FROM unio_assistant.daily_usage WHERE day<CURRENT_DATE-31", ()),
+                       ("DELETE FROM unio_assistant.budget WHERE CASE WHEN period LIKE 'day:%' THEN substring(period from 5)::date<CURRENT_DATE-31 WHEN period LIKE 'month:%' THEN (substring(period from 7)||'-01')::date<CURRENT_DATE-62 ELSE false END", ())]),
+        ('users', [("DELETE FROM users WHERE COALESCE(token_last_used_at,token_created_at,created_at)<now()-($1::integer*interval '1 day')", (USER_RETENTION_DAYS,))]),
+        ('schedule', [('DELETE FROM schedule_lessons WHERE lesson_date < CURRENT_DATE - $1::integer', (SCHEDULE_RETENTION_DAYS,))]),
+    ]
+    first_failure = None
     stage = 'acquire'
     try:
         async with get_pool().acquire() as conn:
-            stage = 'begin'
-            async with conn.transaction():
-                stage = 'web_sessions'
-                await conn.execute('DELETE FROM web_portal_sessions WHERE expires_at<now()')
-                stage = 'web_push'
-                await conn.execute("DELETE FROM web_push_subscriptions WHERE updated_at<now()-interval '30 days'")
-                await conn.execute("DELETE FROM web_push_deliveries WHERE created_at<now()-interval '10 days'")
-                stage = 'assistant'
-                await conn.execute("DELETE FROM unio_assistant.daily_usage WHERE day<CURRENT_DATE-31")
-                await conn.execute("DELETE FROM unio_assistant.budget WHERE CASE WHEN period LIKE 'day:%' THEN substring(period from 5)::date<CURRENT_DATE-31 WHEN period LIKE 'month:%' THEN (substring(period from 7)||'-01')::date<CURRENT_DATE-62 ELSE false END")
-                stage = 'users'
-                await conn.execute('''DELETE FROM users WHERE
-                    COALESCE(token_last_used_at,token_created_at,created_at)
-                    < now() - ($1::integer * interval '1 day')''', USER_RETENTION_DAYS)
-                stage = 'schedule'
-                await conn.execute('''DELETE FROM schedule_lessons
-                    WHERE lesson_date < CURRENT_DATE - $1::integer''', SCHEDULE_RETENTION_DAYS)
-                stage = 'commit'
-            stage = 'release'
+            for stage, statements in stages:
+                try:
+                    async with conn.transaction():
+                        for sql, args in statements:
+                            await conn.execute(sql, *args)
+                    retention_status[stage] = {'status': 'ok', 'last_success': datetime.now(timezone.utc).isoformat()}
+                except Exception as error:
+                    previous = retention_status.get(stage, {})
+                    retention_status[stage] = {**previous, 'status': 'error'}
+                    failure = RetentionFailure(stage, error)
+                    logging.getLogger('unio').warning(retention_failure_code(failure))
+                    first_failure = first_failure or failure
     except Exception as error:
         raise RetentionFailure(stage, error) from error
+    if first_failure:
+        raise first_failure
 
 
 async def retention_loop():

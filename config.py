@@ -25,7 +25,7 @@ TEACHER_PORTAL_URL = os.getenv(
     "TEACHER_PORTAL_URL",
     "https://portal.vspu.ru/schedule/lecturers",
 )
-CACHE_TTL = int(os.getenv("CACHE_TTL", "86400"))
+CACHE_TTL = int(os.getenv("CACHE_TTL", "900"))
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "15"))
 NEWS_CACHE_TTL = int(os.getenv("NEWS_CACHE_TTL", "300"))
 NEWS_SYNC_INTERVAL = int(os.getenv("NEWS_SYNC_INTERVAL", "86400"))

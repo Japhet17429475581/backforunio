@@ -92,7 +92,11 @@ async def redis_ping() -> bool:
         return False
 
 
-async def redis_try_lock(key: str, ttl: int = 30) -> str | None:
+class RedisUnavailable(RuntimeError):
+    pass
+
+
+async def redis_try_lock(key: str, ttl: int = 30, *, strict: bool = False) -> str | None:
     """Распределённый lock: только один worker обновляет ресурс."""
     token = secrets.token_urlsafe(16)
     try:
@@ -100,6 +104,8 @@ async def redis_try_lock(key: str, ttl: int = 30) -> str | None:
         return token if acquired else None
     except Exception as exc:
         log_event('redis_operation_failed', level=30, error=exc)
+        if strict:
+            raise RedisUnavailable() from None
         return None
 
 

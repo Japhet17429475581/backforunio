@@ -1,3 +1,5 @@
+import os
+import secrets
 from fastapi import (
     APIRouter,
     HTTPException,
@@ -82,6 +84,9 @@ async def news_article(
 
 @router.post("/sync")
 async def news_sync(request: Request):
+    expected = os.getenv('ADMIN_SYNC_TOKEN', '')
+    if not expected or not secrets.compare_digest(request.headers.get('x-admin-token', ''), expected):
+        raise HTTPException(403, detail={'code': 'admin_required'})
     await enforce_rate_limit(
         key=f"news:sync:{request.client.host if request.client else 'unknown'}",
         limit=1,

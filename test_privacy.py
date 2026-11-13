@@ -110,7 +110,14 @@ class PrivacyTests(unittest.IsolatedAsyncioTestCase):
             (6, 'schedule', asyncpg.UndefinedColumnError('synthetic-sensitive'), 'missing_column'),
         ]:
             pool, conn = database()
-            conn.execute.side_effect = [None] * index + [error]
+            calls = 0
+            async def execute(*args):
+                nonlocal calls
+                current = calls
+                calls += 1
+                if current == index:
+                    raise error
+            conn.execute.side_effect = execute
             output = io.StringIO()
             handler = logging.StreamHandler(output)
             handler.addFilter(PrivateLogFilter())
@@ -127,7 +134,8 @@ class PrivacyTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('reason_' + reason, logged)
             self.assertNotIn('synthetic-sensitive', logged)
             self.assertNotIn('Traceback', logged)
-            self.assertEqual(conn.execute.await_count, index + 1)
+            self.assertGreaterEqual(conn.execute.await_count, index + 1)
+            self.assertIn("schedule_lessons", conn.execute.call_args_list[-1].args[0])
 
     async def test_retention_acquire_failure_has_safe_stage(self):
         with patch('privacy.get_pool', side_effect=RuntimeError('synthetic-sensitive')):

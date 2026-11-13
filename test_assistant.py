@@ -189,11 +189,12 @@ class AppActionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AssistantTests(unittest.IsolatedAsyncioTestCase):
-    async def test_closed_test_mode_skips_paid_request_quotas(self):
+    async def test_closed_test_mode_preserves_global_spending_ceiling(self):
         with patch('assistant.service.config.TEST_MODE',True),patch('assistant.service.config.KEY','synthetic'),patch('assistant.service.retrieve',AsyncMock(return_value=[SOURCE])),patch('assistant.service.reserve_budget',AsyncMock(side_effect=BudgetExceeded)) as budget:
             result=await self.assistant.answer(Question(question='Как получить стипендию?',allow_external=True),self.user,self.loader)
-        self.assertEqual(result['status'],'answered')
-        budget.assert_not_awaited()
+        self.assertEqual(result['status'],'limit')
+        budget.assert_awaited_once()
+        self.assertFalse(budget.call_args.kwargs['enforce_user_limit'])
 
     async def test_closed_test_route_does_not_require_redis_or_rate_quota(self):
         app=FastAPI();app.include_router(router)

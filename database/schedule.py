@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from database.connection import get_pool
 
@@ -10,14 +10,19 @@ async def save_lessons(
     kind: str,
     value: str,
     lessons: list,
+    start: date | None = None,
+    end: date | None = None,
 ) -> None:
-    if not lessons:
-        return
+    if not lessons and (start is None or end is None):
+        raise ValueError("An empty replacement requires explicit week bounds")
 
     pool = get_pool()
 
-    first_date = min(x.date for x in lessons)
-    last_date = max(x.date for x in lessons)
+    first_date = start if start is not None else min(x.date for x in lessons)
+    last_date = end if end is not None else max(x.date for x in lessons)
+
+    if first_date > last_date or any(not first_date <= x.date <= last_date for x in lessons):
+        raise ValueError("Lessons outside replacement range")
 
     async with pool.acquire() as conn:
         async with conn.transaction():

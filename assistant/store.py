@@ -56,7 +56,7 @@ async def retrieve(question):
             for i,x in enumerate(selected,1)]
 
 
-async def reserve_budget(user_id, tokens):
+async def reserve_budget(user_id, tokens, *, enforce_user_limit=True):
     """Reserve worst-case UTF-8-byte input + max output BEFORE calling provider.
     No refunds on failure: even ambiguous timeouts cannot exceed reserved budget.
     Shared across workers/restarts. The same lock order prevents deadlocks.
@@ -71,6 +71,8 @@ async def reserve_budget(user_id, tokens):
                 if used+tokens > limit:
                     raise BudgetExceeded()
                 await conn.execute('UPDATE unio_assistant.budget SET reserved_tokens=reserved_tokens+$2 WHERE period=$1',period,tokens)
+            if not enforce_user_limit:
+                return
             await conn.execute('INSERT INTO unio_assistant.daily_usage(user_id,day) VALUES($1,$2) ON CONFLICT DO NOTHING',user_id,day)
             count = await conn.fetchval('SELECT calls FROM unio_assistant.daily_usage WHERE user_id=$1 AND day=$2 FOR UPDATE',user_id,day)
             if count >= USER_DAILY:

@@ -124,11 +124,10 @@ class Assistant:
             content = json.dumps(payload,ensure_ascii=False)
             # Byte bound intentionally conservative for mixed Russian / English and OCR.
             reserved = len((SYSTEM+content).encode('utf-8')) + config.MAX_OUTPUT + 256
-            if not config.TEST_MODE:
-                try:
-                    await reserve_budget(user['id'],reserved)
-                except BudgetExceeded:
-                    return {'status':'limit'}
+            try:
+                await reserve_budget(user['id'], reserved, enforce_user_limit=not config.TEST_MODE)
+            except BudgetExceeded:
+                return {'status':'limit'}
             try:
                 if on_event: await on_event('status',{'status':'writing'})
                 request_body = {

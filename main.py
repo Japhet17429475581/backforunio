@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import os
 import re
+import weakref
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -29,6 +30,7 @@ from redis_db import (
     redis_set_json,
     redis_try_lock,
     redis_unlock,
+    RedisUnavailable,
 )
 
 from auth_api import router as auth_router
@@ -37,7 +39,7 @@ from news.router import service as news_service
 from config import NEWS_SYNC_INTERVAL
 from notifications import build_notification_plan
 from teachers.parser import TeacherScheduleParser
-from groups import router as groups_router
+from groups import router as groups_router, directory as group_directory
 from privacy import retention_loop
 from server_logging import SafeRequestLogMiddleware, configure_private_logging, log_event
 from diagnostics import router as diagnostics_router
@@ -75,10 +77,14 @@ async def lifespan(app: FastAPI):
     async with AsyncExitStack() as resources:
         resources.push_async_callback(close_db)
         resources.push_async_callback(close_redis)
+        resources.push_async_callback(group_directory.close)
         try:
             log_event('postgres_starting')
             await init_db()
             log_event('postgres_ready')
+            global _schedule_client
+            _schedule_client = httpx.AsyncClient(timeout=httpx.Timeout(3, connect=2), follow_redirects=True)
+            resources.push_async_callback(_schedule_client.aclose)
             await prepare_corpus()
             log_event('redis_starting')
             await init_redis()
@@ -132,6 +138,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware('http')
+async def schedule_request_limit(request, call_next):
+    if request.url.path in ('/api/v1/schedule', '/api/v1/teachers/schedule'):
+        from rate_limit import enforce_rate_limit
+        force = request.query_params.get('force_refresh', '').lower() in ('true', '1', 'yes', 'on')
+        host = request.client.host if request.client else 'unknown'
+        try:
+            await enforce_rate_limit(key=f'schedule:ip:{host}:{force}',
+                                     limit=12 if force else 120, window_seconds=60)
+        except HTTPException as error:
+            return JSONResponse({'detail': error.detail}, status_code=error.status_code, headers=error.headers)
+    return await call_next(request)
+
 
 # Personal portal operations run directly on the device; legacy routes are unmounted.
 app.include_router(auth_router)
@@ -375,7 +395,18 @@ class CacheEntry:
  
 student_cache: dict[tuple[str, int, int], CacheEntry] = {}
 teacher_cache: dict[tuple[str, int, int], CacheEntry] = {}
-cache_lock = asyncio.Lock()
+_schedule_locks = weakref.WeakValueDictionary()
+_portal_slots = asyncio.Semaphore(3)
+_schedule_client = None
+SCHEDULE_DEADLINE = 8
+
+
+def _schedule_lock(key):
+    lock = _schedule_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _schedule_locks[key] = lock
+    return lock
 MAX_LOCAL_CACHE_ENTRIES = 256
 
 
@@ -414,25 +445,27 @@ async def fetch_html(
         )
     }
  
-    last_error: Exception | None = None
-    for attempt in range(3):
-        try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(REQUEST_TIMEOUT),
-                headers=headers,
-                follow_redirects=True,
-            ) as client:
-                portal_url = PORTAL_URL if kind == "group" else TEACHER_PORTAL_URL
-                response = await client.get(portal_url, params=params)
+    async def read(client):
+        last_error = None
+        for attempt in range(2):
+            try:
+                response = await client.get(PORTAL_URL if kind == 'group' else TEACHER_PORTAL_URL,
+                                            params=params, headers=headers)
                 response.raise_for_status()
                 return response.text
-        except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as exc:
-            last_error = exc
-            if attempt < 2:
-                await asyncio.sleep(0.5 * (attempt + 1))
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as error:
+                last_error = error
+                if isinstance(error, httpx.HTTPStatusError) and error.response.status_code < 500:
+                    break
+                if attempt == 0:
+                    await asyncio.sleep(0.15)
+        raise last_error
+    async with _portal_slots:
+        if _schedule_client is not None and not _schedule_client.is_closed:
+            return await read(_schedule_client)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(3, connect=2), follow_redirects=True) as client:
+            return await read(client)
 
-    raise last_error or RuntimeError("Не удалось получить расписание с портала")
- 
  
 async def _decode_schedule_payload(kind: str, payload) -> tuple[list, datetime | None]:
     # Поддерживаем и старый формат Redis (просто list), и новый объект.
@@ -466,12 +499,23 @@ async def _decode_schedule_payload(kind: str, payload) -> tuple[list, datetime |
     return lessons, cached_at
 
 
-async def get_lessons(
+async def _read_schedule_cache(key):
+    try:
+        async with asyncio.timeout(0.35):
+            return await redis_get_json(key)
+    except TimeoutError:
+        return None
+
+
+async def _get_lessons(
     *, kind: str, value: str, target: date, force_refresh: bool
 ) -> tuple[list, str, datetime | None]:
     iso = target.isocalendar()
     normalized = value.strip()
     value_hash = hashlib.sha256(normalized.casefold().encode("utf-8")).hexdigest()[:24]
+    if force_refresh:
+        from rate_limit import enforce_rate_limit
+        await enforce_rate_limit(key=f'schedule:refresh:{kind}:{value_hash}', limit=4, window_seconds=60)
     cache_key = f"schedule:{kind}:{value_hash}:{iso.year}:{iso.week}"
     lock_key = f"lock:{cache_key}"
     local_key = (normalized, iso.year, iso.week)
@@ -482,34 +526,48 @@ async def get_lessons(
         if cached and (datetime.now() - cached.created_at).total_seconds() < CACHE_TTL:
             return cached.lessons, "memory", cached.created_at
 
-        payload = await redis_get_json(cache_key)
+        payload = await _read_schedule_cache(cache_key)
         if payload is not None:
             lessons, cached_at = await _decode_schedule_payload(kind, payload)
-            _put_local_cache(local_cache, local_key, CacheEntry(datetime.now(), lessons))
+            _put_local_cache(local_cache, local_key, CacheEntry(cached_at or datetime.now(), lessons))
             return lessons, "redis", cached_at
 
     # Локальный lock + Redis lock защищают от одновременного похода на портал
     # даже при нескольких Uvicorn workers.
-    async with cache_lock:
+    if force_refresh:
+        payload = await _read_schedule_cache(cache_key)
+        if payload is not None:
+            lessons, cached_at = await _decode_schedule_payload(kind, payload)
+            if cached_at and 0 <= (datetime.now() - cached_at).total_seconds() < 30:
+                return lessons, 'redis', cached_at
+    async with _schedule_lock(cache_key):
         if not force_refresh:
             cached = local_cache.get(local_key)
             if cached and (datetime.now() - cached.created_at).total_seconds() < CACHE_TTL:
                 return cached.lessons, "memory", cached.created_at
-            payload = await redis_get_json(cache_key)
+            payload = await _read_schedule_cache(cache_key)
             if payload is not None:
                 lessons, cached_at = await _decode_schedule_payload(kind, payload)
-                _put_local_cache(local_cache, local_key, CacheEntry(datetime.now(), lessons))
+                _put_local_cache(local_cache, local_key, CacheEntry(cached_at or datetime.now(), lessons))
                 return lessons, "redis", cached_at
 
-        lock_token = await redis_try_lock(lock_key, ttl=max(30, int(REQUEST_TIMEOUT) + 15))
+        cached = local_cache.get(local_key)
+        if force_refresh and cached and (datetime.now() - cached.created_at).total_seconds() < 30:
+            return cached.lessons, 'memory', cached.created_at
+        try:
+            async with asyncio.timeout(0.35):
+                lock_token = await redis_try_lock(lock_key, ttl=15, strict=True)
+        except (RedisUnavailable, TimeoutError):
+            # Public timetable can operate with process-local deduplication.
+            lock_token = 'local-only'
         if lock_token is None:
             # Другой worker сейчас обновляет. Ждём его результат, чтобы не ударить портал повторно.
-            for _ in range(15):
+            for _ in range(18):
                 await asyncio.sleep(0.4)
-                payload = await redis_get_json(cache_key)
+                payload = await _read_schedule_cache(cache_key)
                 if payload is not None:
                     lessons, cached_at = await _decode_schedule_payload(kind, payload)
-                    _put_local_cache(local_cache, local_key, CacheEntry(datetime.now(), lessons))
+                    _put_local_cache(local_cache, local_key, CacheEntry(cached_at or datetime.now(), lessons))
                     return lessons, "redis", cached_at
             raise httpx.HTTPError("Не удалось дождаться обновления кэша расписания")
 
@@ -520,7 +578,7 @@ async def get_lessons(
             _put_local_cache(local_cache, local_key, CacheEntry(cached_at, lessons))
 
             try:
-                await save_lessons(kind=kind, value=normalized, lessons=lessons)
+                await save_lessons(kind=kind, value=normalized, lessons=lessons, start=week_bounds(target)[0], end=week_bounds(target)[1])
             except Exception as exc:
                 log_event('schedule_save_failed', level=30, error=exc)
 
@@ -539,15 +597,35 @@ async def get_lessons(
                 )
                 payload.append(item)
 
-            await redis_set_json(
-                cache_key,
-                {"lessons": payload, "cached_at": cached_at.isoformat()},
-                CACHE_TTL,
-            )
+            try:
+                async with asyncio.timeout(0.35):
+                    await redis_set_json(cache_key, {"lessons": payload, "cached_at": cached_at.isoformat()}, CACHE_TTL)
+            except TimeoutError:
+                pass
             return lessons, "portal", cached_at
         finally:
-            if lock_token:
-                await redis_unlock(lock_key, lock_token)
+            if lock_token and lock_token != 'local-only':
+                try:
+                    async with asyncio.timeout(0.35):
+                        await redis_unlock(lock_key, lock_token)
+                except TimeoutError:
+                    pass
+
+async def get_lessons(*, kind, value, target, force_refresh):
+    if kind not in ('group', 'teacher') or not value.strip() or len(value) > 255:
+        raise HTTPException(422, detail={'code': 'invalid_schedule_owner'})
+    if abs((target - date.today()).days) > 366:
+        raise HTTPException(422, detail={'code': 'invalid_schedule_date'})
+    try:
+        async with asyncio.timeout(SCHEDULE_DEADLINE):
+            return await _get_lessons(kind=kind, value=value, target=target, force_refresh=force_refresh)
+    except (TimeoutError, httpx.HTTPError):
+        iso = target.isocalendar()
+        cached = (student_cache if kind == 'group' else teacher_cache).get((value.strip(), iso.year, iso.week))
+        if cached and (datetime.now() - cached.created_at).total_seconds() < 7 * 86400:
+            return cached.lessons, 'stale', cached.created_at
+        raise httpx.HTTPError('Schedule temporarily unavailable') from None
+
 
 from teachers.router import router as teacher_router
 # Bind the existing loader without importing main from the router.
@@ -759,10 +837,28 @@ async def health():
         "postgresql": postgres,
         "redis": redis_status,
     }
+    from assistant.startup import corpus_status
+    from privacy import retention_status
+    payload['assistant'] = dict(corpus_status)
+    payload['retention'] = dict(retention_status)
     payload.update(checks)
 
     if status != "ok":
         raise HTTPException(status_code=503, detail=payload)
+    return payload
+
+
+@app.get('/health/live')
+async def liveness():
+    return {'status': 'ok'}
+
+
+@app.get('/health/ready')
+async def readiness():
+    payload = await health()
+    from assistant import config as ai_config
+    if ai_config.ENABLED and payload['assistant']['status'] != 'ready':
+        raise HTTPException(503, detail=payload)
     return payload
 
 
